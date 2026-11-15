@@ -1,0 +1,84 @@
+name: RaceProof CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: raceproof_dev
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d raceproof_dev"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres@localhost:5432/raceproof_dev
+      TEST_DATABASE_URL: postgresql://postgres@localhost:5432/raceproof_test
+      BCRYPT_SALT_ROUNDS: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Create isolated test database
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE raceproof_test'
+
+      - name: Apply development database migrations
+        working-directory: backend
+        env:
+          NODE_ENV: development
+        run: npm run db:migrate
+
+      - name: Apply test database migrations
+        working-directory: backend
+        env:
+          NODE_ENV: test
+        run: npm run db:migrate
+
+      - name: Create ephemeral test signing key
+        run: printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Run backend Jest suite
+        working-directory: backend
+        env:
+          NODE_ENV: test
+        run: npm test
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend for production
+        working-directory: frontend
+        run: npm run build
